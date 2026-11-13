@@ -1,0 +1,81 @@
+name: build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  # OpenJDK 17 built for Android (arm64). It is the only non-from-scratch piece: nobody writes a JVM by hand.
+  JRE_REPO: PojavLauncherTeam/android-openjdk-build-multiarch
+  JRE_PATTERN: "jre17-arm64*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Fetch OpenJDK 17 for Android arm64
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p jre-dl && cd jre-dl
+          found=0
+          for tag in $(gh release list -R "$JRE_REPO" -L 60 --json tagName -q '.[].tagName'); do
+            if gh release download "$tag" -R "$JRE_REPO" -p "$JRE_PATTERN" 2>/dev/null; then
+              echo "using release $tag"; found=1; break
+            fi
+          done
+          if [ "$found" != 1 ]; then
+            echo "::error::no asset matching $JRE_PATTERN found in $JRE_REPO"
+            gh release list -R "$JRE_REPO" -L 20 || true
+            exit 1
+          fi
+          ls -la
+
+      - name: Pack JRE into the app
+        run: |
+          mkdir jre-x
+          f=$(ls jre-dl/* | head -n1)
+          case "$f" in
+            *.tar.xz|*.tar.gz|*.tgz) tar -xf "$f" -C jre-x ;;
+            *.zip) unzip -q "$f" -d jre-x ;;
+            *) echo "::error::unknown archive $f"; exit 1 ;;
+          esac
+          find jre-x -name libjvm.so
+          mkdir -p app/src/main/assets
+          (cd jre-x && zip -qr9 "$GITHUB_WORKSPACE/app/src/main/assets/jre.zip" .)
+          ls -la app/src/main/assets
+
+      - name: Build test jar
+        run: |
+          mkdir -p tmp-test
+          javac --release 8 -d tmp-test app/src/main/test/AzuxTest.java
+          jar cf app/src/main/assets/azux-test.jar -C tmp-test .
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.5"
+
+      - name: Build APK
+        run: gradle --no-daemon assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azux-engine-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish APK as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "stage1-${{ github.run_number }}" app/build/outputs/apk/debug/app-debug.apk \
+            --title "Azux engine stage 1 #${{ github.run_number }}" --notes "Stage 1: own JVM launcher test." || true

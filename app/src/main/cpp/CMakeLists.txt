@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.18)
+project(azux C)
+set(CMAKE_C_STANDARD 11)
+add_library(azux SHARED azux_jvm.c)
+target_link_libraries(azux log dl)
