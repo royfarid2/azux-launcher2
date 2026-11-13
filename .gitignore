@@ -1,0 +1,5 @@
+build/
+.gradle/
+local.properties
+app/src/main/assets/jre.zip
+app/src/main/assets/azux-test.jar

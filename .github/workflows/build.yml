@@ -1,0 +1,117 @@
+name: build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  # OpenJDK 17 built for Android (arm64). It is the only non-from-scratch piece: nobody writes a JVM by hand.
+  # Release "JRE17 for Android" of that repo. (The newer tag jre17-ca01427 is the *iOS* build: it has no libjvm.so.)
+  JRE_REPO: PojavLauncherTeam/android-openjdk-build-multiarch
+  JRE_TAG: jre17-ec28559
+  JRE_PATTERN: "jre17-arm64*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Fetch OpenJDK 17 for Android arm64
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p jre-dl && cd jre-dl
+          echo "---- assets of $JRE_TAG ----"
+          gh release view "$JRE_TAG" -R "$JRE_REPO" --json assets -q '.assets[] | "asset: \(.name) (\(.size) bytes)"'
+          gh release download "$JRE_TAG" -R "$JRE_REPO" -p "$JRE_PATTERN"
+          ls -la
+
+      - name: Pack JRE into the app
+        run: |
+          mkdir jre-x
+          extract() {
+            case "$1" in
+              *.tar.xz|*.tar.gz|*.tgz|*.tar) tar -xf "$1" -C "$2" ;;
+              *.zip) unzip -q -o "$1" -d "$2" ;;
+              *) echo "skip (not an archive): $1" ;;
+            esac
+          }
+          for f in jre-dl/*; do
+            b=$(basename "$f")
+            case "$b" in *debug*|*sources*|*.sha*|*.md5*) continue ;; esac
+            case "$b" in
+              *arm64*|*aarch64*|*universal*|*common*|*noarch*|*shared*)
+                echo "extracting $b"; extract "$f" jre-x ;;
+            esac
+          done
+          # some builds nest another archive inside: unpack it too
+          for i in 1 2 3; do
+            if [ -z "$(find jre-x -name 'libjvm.so' | head -n1)" ]; then
+              n=$(find jre-x -type f \( -name '*.tar.xz' -o -name '*.tar.gz' -o -name '*.tgz' -o -name '*.zip' \) | head -n1)
+              [ -n "$n" ] || break
+              echo "nested archive: $n"
+              extract "$n" jre-x
+              rm -f "$n"
+            fi
+          done
+          # fallback: OpenJDK 17 for Android built by Termux
+          if [ -z "$(find jre-x -name 'libjvm.so' | head -n1)" ]; then
+            echo "libjvm.so missing in release assets -> trying Termux openjdk-17"
+            B=https://packages.termux.dev/apt/termux-main
+            curl -fsSL "$B/dists/stable/main/binary-aarch64/Packages" -o Packages
+            fn=$(awk '/^Package: openjdk-17$/{f=1} f&&/^Filename:/{print $2; exit}' Packages)
+            echo "termux package: $fn"
+            curl -fsSL "$B/$fn" -o jdk.deb
+            mkdir -p deb && (cd deb && ar x ../jdk.deb && ls)
+            mkdir -p t && tar -xf deb/data.tar.* -C t
+            J=$(find t -name libjvm.so | head -n1)
+            [ -n "$J" ] || { echo "::error::no libjvm.so anywhere"; exit 1; }
+            H=$(dirname "$(dirname "$(dirname "$J")")")
+            rm -rf jre-x && mkdir jre-x
+            cp -rL "$H"/. jre-x/
+          fi
+          echo "---- tree (top levels, no legal) ----"
+          find jre-x -maxdepth 3 | grep -v legal | head -80
+          J=$(find jre-x -name 'libjvm.so' | head -n1)
+          if [ -z "$J" ]; then
+            echo "::error::libjvm.so is not inside the downloaded JRE archive"
+            exit 1
+          fi
+          echo "libjvm.so at: $J"
+          mkdir -p app/src/main/assets
+          (cd jre-x && zip -qr9 "$GITHUB_WORKSPACE/app/src/main/assets/jre.zip" .)
+          ls -la app/src/main/assets
+
+      - name: Build test jar
+        run: |
+          mkdir -p tmp-test
+          javac --release 8 -d tmp-test app/src/main/test/AzuxTest.java
+          jar cf app/src/main/assets/azux-test.jar -C tmp-test .
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.5"
+
+      - name: Build APK
+        run: gradle --no-daemon assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azux-engine-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish APK as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "stage1-${{ github.run_number }}" app/build/outputs/apk/debug/app-debug.apk \
+            --title "Azux engine stage 1 #${{ github.run_number }}" --notes "Stage 1: own JVM launcher test." || true
