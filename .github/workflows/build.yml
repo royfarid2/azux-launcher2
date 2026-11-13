@@ -1,0 +1,104 @@
+name: Build Azux Launcher
+on:
+  push:
+  workflow_dispatch:
+env:
+  POJAV_COMMIT: b12ad048157b3aa255d078c235dd4571e1900309
+  ZALITH_COMMIT: ed8a5c873b25f19d08aef5bdfc1084fd9aff836c
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch PojavLauncher engine (LGPL-3.0, pinned commit)
+        run: |
+          git clone https://github.com/PojavLauncherTeam/PojavLauncher.git src
+          git -C src checkout "$POJAV_COMMIT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Renderer (LTW)
+        run: curl -fL --retry 3 -o src/app_pojavlauncher/libs/ltw-release.aar https://github.com/PojavLauncherTeam/LTW/releases/latest/download/ltw-release.aar
+
+      # Java runtimes (8 / 17 / 21): first try the official Pojav build artifacts
+      - name: Java 8 (official artifact)
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          workflow: build.yml
+          path: src/app_pojavlauncher/src/main/assets/components/jre
+          workflow_conclusion: success
+          repo: PojavLauncherTeam/android-openjdk-build-multiarch
+          branch: buildjre8
+          name: jre8-pojav
+      - name: Java 17 (official artifact)
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          workflow: build.yml
+          path: src/app_pojavlauncher/src/main/assets/components/jre-new
+          workflow_conclusion: success
+          repo: PojavLauncherTeam/android-openjdk-build-multiarch
+          branch: buildjre17-21
+          name: jre17-pojav
+      - name: Java 21 (official artifact)
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          workflow: build.yml
+          path: src/app_pojavlauncher/src/main/assets/components/jre-21
+          workflow_conclusion: success
+          repo: PojavLauncherTeam/android-openjdk-build-multiarch
+          branch: buildjre17-21
+          name: jre21-pojav
+
+      # ...and fall back to prebuilt arm64 runtimes if an artifact expired
+      - name: Java runtimes fallback
+        run: |
+          C=src/app_pojavlauncher/src/main/assets/components
+          RAW=https://raw.githubusercontent.com/ZalithLauncher/ZalithLauncher/$ZALITH_COMMIT/ZalithLauncher/src/main/assets/components
+          fetch() {  # <target dir> <source dir>
+            d="$C/$1"
+            if [ -s "$d/universal.tar.xz" ] && [ -s "$d/bin-arm64.tar.xz" ] && [ -s "$d/version" ]; then echo "$1: official artifact OK"; return; fi
+            echo "$1: using fallback runtime $2"
+            rm -rf "$d"; mkdir -p "$d"
+            for f in universal.tar.xz bin-arm64.tar.xz version; do
+              curl -fL --retry 3 -o "$d/$f" "$RAW/$2/$f"
+            done
+          }
+          fetch jre jre-8
+          fetch jre-new jre-17
+          fetch jre-21 jre-21
+          ls -la $C/jre $C/jre-new $C/jre-21
+
+      - name: Azux patch
+        run: bash patch.sh src
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11"
+
+      - name: Build JRE helper jars
+        working-directory: src
+        run: |
+          ./scripts/languagelist_updater.sh
+          mkdir -p out
+          gradle :jre_lwjgl3glfw:build --no-daemon
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build Azux APK
+        working-directory: src
+        run: gradle :app_pojavlauncher:assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Azux-Launcher
+          path: src/app_pojavlauncher/build/outputs/apk/debug/*.apk
