@@ -9,6 +9,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#ifndef JNI_VERSION_1_8
+#define JNI_VERSION_1_8 0x00010008
+#endif
+
 #define TAG "azux"
 #define LOG(...) do { fprintf(stderr, "[azux] " __VA_ARGS__); fputc('\n', stderr); \
                       __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__); } while (0)
