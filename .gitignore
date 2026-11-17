@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+natives.log
+tools/__pycache__/
+# native libraries built by CI (tools/build_natives.sh)
+app/src/main/jniLibs/arm64-v8a/libazuxengine.so
+app/src/main/jniLibs/arm64-v8a/liblwjgl*.so
+app/src/main/jniLibs/arm64-v8a/libgl4es.so
+app/src/main/jniLibs/arm64-v8a/libopenal.so
